@@ -1,19 +1,18 @@
 #include "EspMQTTClient.h"
-//#include "Wire.h"
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <WiFiUdp.h>
 
 #define LED_PIN     4
 #define LED_COUNT  50
-#define BRIGHTNESS 100 // Set BRIGHTNESS to about 1/5 (max = 255)
+#define BRIGHTNESS 100 // Set BRIGHTNESS (max = 255)
 #define UDP_PORT 4210
 
 #define PERIODIC_MESSAGE_INTERVAL     30*1000 /*!< periodicity of messages in milliseconds */
 #define DSP_VOLUME_CHANNELS_NUM       24 /*!< num address in memory (indirect memory table) */
 
 
-#define MIN_MAX_VALUES_NUM 100
+#define MIN_MAX_VALUES_NUM 50
 
 uint8_t mqtt_mutex = 0;
 unsigned long current_ms = 0;
@@ -26,6 +25,10 @@ uint16_t volumes[DSP_VOLUME_CHANNELS_NUM];
 uint16_t normalized_volumes[DSP_VOLUME_CHANNELS_NUM];
 uint16_t min_values[MIN_MAX_VALUES_NUM];
 uint16_t max_values[MIN_MAX_VALUES_NUM];
+
+uint8_t max_first_flag = 0;
+uint8_t min_first_flag = 0;
+
 
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_RGB + NEO_KHZ400);
 WiFiUDP udp_client;
@@ -83,42 +86,30 @@ uint16_t find_minimum(uint16_t a[], uint8_t n) {
 
 uint16_t update_min_ring_buffer(uint16_t min) {
   for (uint8_t i = 0; i < MIN_MAX_VALUES_NUM - 1; i++) {
-    min_values[i] = min_values[i + 1];
+    if (min_first_flag == 0) {
+      min_values[i] = min;
+    } else {
+      min_values[i] = min_values[i + 1];
+    }
+    min_values[MIN_MAX_VALUES_NUM - 1] = min;
   }
-  min_values[MIN_MAX_VALUES_NUM - 1] = min;
+  min_first_flag = 1;
   return min_values[find_minimum(min_values, MIN_MAX_VALUES_NUM)];
 }
 
 
 uint16_t update_max_ring_buffer(uint16_t max) {
-  //Serial.print("MRB1: ");
-  //for (uint8_t i = 0; i < MIN_MAX_VALUES_NUM; i++) {
-  //  Serial.print(max_values[i]);
-  //  Serial.print(",");
-  //}
-  //Serial.print("\n");
-
-  for (uint8_t i = 0; i < MIN_MAX_VALUES_NUM - 1; i++) {
-    max_values[i] = max_values[i + 1];
+  if (max != 0) {
+    for (uint8_t i = 0; i < MIN_MAX_VALUES_NUM - 1; i++) {
+      if (max_first_flag == 0) {
+        max_values[i] = max;
+      } else {
+        max_values[i] = max_values[i + 1];
+      }
+    }
+    max_values[MIN_MAX_VALUES_NUM - 1] = max;
   }
-
-  //  Serial.print("MRB2: ");
-  //for (uint8_t i = 0; i < MIN_MAX_VALUES_NUM; i++) {
-  //  Serial.print(max_values[i]);
-  //  Serial.print(",");
-  //}
-  //Serial.print("\n");
-
-
-  max_values[MIN_MAX_VALUES_NUM - 1] = max;
-
-  //  Serial.print("MRB3: ");
-  //for (uint8_t i = 0; i < MIN_MAX_VALUES_NUM; i++) {
-  //  Serial.print(max_values[i]);
-  //  Serial.print(",");
-  //}
-  //Serial.print("\n");
-
+  max_first_flag = 1;
   return max_values[find_maximum(max_values, MIN_MAX_VALUES_NUM)];
 }
 
@@ -146,17 +137,9 @@ void onConnectionEstablished()
 
 //---------------------------------------------//
 
-void setup()
-{
-  Serial.begin(115200);
-  mqtt_client.enableDebuggingMessages();
-  strip.begin();           // INITIALIZE NeoPixel strip object (REQUIRED)
-  strip.show();            // Turn OFF all pixels ASAP
-  strip.setBrightness(BRIGHTNESS);
-  udp_client.begin(UDP_PORT);
-}
 
-void colorWipe(uint32_t color, int wait) {
+
+void colorWipe(uint32_t color) {
   for(int i=0; i < strip.numPixels(); i++) {
     strip.setPixelColor(i, color);
   }
@@ -183,79 +166,81 @@ void color_update() {
 }
 
 void incoming_udp_packet() {
-  //Serial.print("UDP packet contents: ");
-
   uint32_t volumes_32t[DSP_VOLUME_CHANNELS_NUM];
-  //Serial.print("R: ");
+
   for (uint8_t i = 0; i < DSP_VOLUME_CHANNELS_NUM; i++) {
     uint32_t volume = 0x00 | (0x00 << 8) | (incoming_packet[i*2 + 1] << 16) | (incoming_packet[i*2 + 0] << 24);
     volumes[i] = volume/1000000;
-    //Serial.print(volumes[i]);
-    //Serial.print(",");
   }
 
+  //Serial.print("R: ");
+  //for (uint8_t i = 0; i < DSP_VOLUME_CHANNELS_NUM; i++) {
+  //  Serial.print(volumes[i]);
+  //  Serial.print(",");
+  //}
+  //Serial.print("\n");
 
 
   uint16_t current_min_value = volumes[find_minimum(volumes, DSP_VOLUME_CHANNELS_NUM)];
   uint16_t current_max_value = volumes[find_maximum(volumes, DSP_VOLUME_CHANNELS_NUM)];
-
   uint16_t min_value = update_min_ring_buffer(current_min_value);
   uint16_t max_value = update_max_ring_buffer(current_max_value);
 
-
-  //Serial.print("\nCMin: ");
+  //Serial.print("CM: ");
   //Serial.print(current_min_value);
-  //Serial.print(", CMax: ");
+  //Serial.print(",");
   //Serial.print(current_max_value);
-  //Serial.print("\n");
-  //Serial.print("\nAMin: ");
+  //Serial.print(" AM:");
   //Serial.print(min_value);
-  //Serial.print(", AMax: ");
+  //Serial.print(",");
   //Serial.print(max_value);
   //Serial.print("\n");
 
-  if (max_value == min_value) { return; }
 
-
-  //Serial.print("\nN: ");
-  for (uint8_t i = 0; i < DSP_VOLUME_CHANNELS_NUM; i++) {
-    //uint8_t i = 0;
-    uint16_t current_value = volumes[i];
-    //int32_t new_volume = map(current_value, min_value, max_value, 0, 255);
-    normalized_volumes[i] = map(current_value, min_value, max_value, 0, 255);
-    //Serial.print(normalized_volumes[i]);
-    //Serial.print(",");
-
-    //Serial.print(new_volume);
-    //Serial.print(" = map(");
-    //Serial.print(current_value);
-    //Serial.print(",");
-    //Serial.print(min_value);
-    //Serial.print(",");
-    //Serial.print(max_value);
-    //Serial.print(",");
-    //Serial.print(0);
-    //Serial.print(",");
-    //Serial.print(255);
-    //Serial.print(")\n");
+  if (max_value == min_value) {
+    Serial.print("Max=Min, no data\n");
+    colorWipe(strip.Color(0, 0, 0));
+    return;
   }
-  //Serial.print("\n\n");
+
+  for (uint8_t i = 0; i < DSP_VOLUME_CHANNELS_NUM; i++) {
+    uint16_t current_value = volumes[i];
+    normalized_volumes[i] = map(current_value, min_value, max_value, 0, 255);
+  }
+
+  //Serial.print("N: ");
+  //for (uint8_t i = 0; i < DSP_VOLUME_CHANNELS_NUM; i++) {
+  //  Serial.print(volumes[i]);
+  //  Serial.print(",");
+  //}
+  //Serial.print("\n");
+
   Serial.print(".");
   color_update();
 }
 
+void setup()
+{
+  Serial.begin(115200);
+  mqtt_client.enableDebuggingMessages();
+  strip.begin();
+  strip.show();
+  strip.setBrightness(BRIGHTNESS);
+  colorWipe(strip.Color(0, 0, 0));
+  udp_client.begin(UDP_PORT);
+}
+
 void loop()
 {
-  //colorWipe(strip.Color(255, 0, 0),50); // Red
   mqtt_client.loop();
   current_ms = millis();
 
   if (udp_client.parsePacket()) {
-    incoming_packet_length = udp_client.read(incoming_packet, 255);
+    incoming_packet_length = udp_client.read(incoming_packet, DSP_VOLUME_CHANNELS_NUM*2);
     incoming_udp_packet();
   }
 
-  if (current_ms - previous_ms >= PERIODIC_MESSAGE_INTERVAL) {
+  if (current_ms - previous_ms >= PERIODIC_MESSAGE_INTERVAL) { //TODO гасить, если больше секунды нет данных
     previous_ms = current_ms;
     //Serial.println("Publishing to MQTT periodic message");
     //mqtt_client.publish("audiolight/status", "ok");

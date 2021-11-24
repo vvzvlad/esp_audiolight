@@ -1,4 +1,4 @@
-main: build upload
+main: build upload miniterm
 
 #fqbn:
 #1) "--fqbn", not "-fqbn"
